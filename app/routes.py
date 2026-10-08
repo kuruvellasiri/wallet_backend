@@ -5,6 +5,7 @@ from typing import Annotated, List
 from fastapi import (
     APIRouter,
     Depends,
+    HTTPException,
     Query,
     status,
 )
@@ -14,6 +15,8 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 
 from app.services import WalletService
+from app.auth import AuthenticatedUser, get_current_user
+from app.models import Wallet
 
 from app.schemas import (
     WalletCreate,
@@ -36,6 +39,25 @@ DBDep = Annotated[
     Depends(get_db)
 ]
 
+CurrentUserDep = Annotated[
+    AuthenticatedUser,
+    Depends(get_current_user),
+]
+
+
+def _get_owned_wallet(
+    db: Session,
+    wallet_id: uuid.UUID,
+    current_user: AuthenticatedUser,
+) -> Wallet:
+    wallet = WalletService.get_wallet_by_id(db, wallet_id)
+    if wallet.user_id != current_user.user_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You do not have access to this wallet",
+        )
+    return wallet
+
 
 # ---------------------------------
 # Create Wallet
@@ -49,11 +71,18 @@ DBDep = Annotated[
 def create_wallet(
     payload: WalletCreate,
     db: DBDep,
+    current_user: CurrentUserDep,
 ):
+
+    if payload.user_id != current_user.user_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="A wallet can only be created for the authenticated user",
+        )
 
     return WalletService.create_wallet(
         db,
-        user_id=payload.user_id,
+        user_id=current_user.user_id,
         currency=payload.currency or "USD",
     )
 
@@ -68,6 +97,7 @@ def create_wallet(
 )
 def list_wallets(
     db: DBDep,
+    current_user: CurrentUserDep,
 
     limit: Annotated[
         int,
@@ -82,6 +112,7 @@ def list_wallets(
 
     return WalletService.get_all_wallets(
         db,
+        user_id=current_user.user_id,
         limit=limit,
         offset=offset,
     )
@@ -98,7 +129,14 @@ def list_wallets(
 def get_wallet_by_user(
     user_id: str,
     db: DBDep,
+    current_user: CurrentUserDep,
 ):
+
+    if user_id != current_user.user_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You do not have access to this user's wallet",
+        )
 
     return WalletService.get_wallet_by_user_id(
         db,
@@ -118,7 +156,10 @@ def credit_wallet(
     wallet_id: uuid.UUID,
     payload: TransactionRequest,
     db: DBDep,
+    current_user: CurrentUserDep,
 ):
+
+    _get_owned_wallet(db, wallet_id, current_user)
 
     _, ledger_entry = WalletService.credit_wallet(
         db,
@@ -142,7 +183,10 @@ def debit_wallet(
     wallet_id: uuid.UUID,
     payload: TransactionRequest,
     db: DBDep,
+    current_user: CurrentUserDep,
 ):
+
+    _get_owned_wallet(db, wallet_id, current_user)
 
     _, ledger_entry = WalletService.debit_wallet(
         db,
@@ -165,12 +209,10 @@ def debit_wallet(
 def get_wallet_balance(
     wallet_id: uuid.UUID,
     db: DBDep,
+    current_user: CurrentUserDep,
 ):
 
-    wallet = WalletService.get_wallet_by_id(
-        db,
-        wallet_id=wallet_id,
-    )
+    wallet = _get_owned_wallet(db, wallet_id, current_user)
 
     return WalletBalanceResponse(
         wallet_id=wallet.id,
@@ -192,6 +234,7 @@ def get_wallet_balance(
 def get_wallet_ledger(
     wallet_id: uuid.UUID,
     db: DBDep,
+    current_user: CurrentUserDep,
 
     limit: Annotated[
         int,
@@ -203,6 +246,8 @@ def get_wallet_ledger(
         Query(ge=0),
     ] = 0,
 ):
+
+    _get_owned_wallet(db, wallet_id, current_user)
 
     total, entries = WalletService.get_ledger_history(
         db,

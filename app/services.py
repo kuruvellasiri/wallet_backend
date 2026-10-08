@@ -112,12 +112,14 @@ class WalletService:
     @staticmethod
     def get_all_wallets(
         db: Session,
+        user_id: str,
         limit: int = 50,
         offset: int = 0,
     ) -> List[Wallet]:
 
         return (
             db.query(Wallet)
+            .filter(Wallet.user_id == user_id)
             .order_by(Wallet.created_at.desc())
             .offset(offset)
             .limit(limit)

@@ -13,6 +13,29 @@ from pydantic import (
 from app.models import LedgerOperation
 
 
+class LoginRequest(BaseModel):
+    username: str = Field(..., min_length=1, max_length=100)
+    password: str = Field(..., min_length=1, max_length=256)
+
+
+class RegisterRequest(LoginRequest):
+    """Credentials used to create a new account."""
+
+
+class UserResponse(BaseModel):
+    id: uuid.UUID
+    username: str
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class TokenResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    expires_in: int
+
+
 # -------------------------
 # Wallet Schemas
 # -------------------------

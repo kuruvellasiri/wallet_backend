@@ -10,6 +10,7 @@ from app.database import (
 import app.models
 
 from app.routes import router as wallet_router
+from app.auth import router as auth_router
 
 
 # Create database tables
@@ -27,4 +28,8 @@ app = FastAPI(
 
 app.include_router(
     wallet_router
+)
+
+app.include_router(
+    auth_router
 )

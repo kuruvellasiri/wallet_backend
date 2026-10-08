@@ -6,6 +6,7 @@ Run with the FastAPI server already running, for example:
 
 import json
 import os
+import pytest
 import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -21,10 +22,15 @@ REQUEST_COUNT = 50
 DEBIT_AMOUNT = "10.0000"
 INITIAL_BALANCE = "100.0000"
 
+pytestmark = pytest.mark.skipif(
+    os.getenv("RUN_CONCURRENCY_INTEGRATION") != "1",
+    reason="Requires an explicitly enabled running PostgreSQL-backed API",
+)
+
 
 def _database_url() -> str:
     """Return the configured DB URL without logging or exposing credentials."""
-    configured = os.getenv("DATABASE_URL")
+    configured = os.getenv("WALLET_API_DATABASE_URL")
     if configured:
         return configured
 
@@ -35,16 +41,28 @@ def _database_url() -> str:
             if stripped and not stripped.startswith("#") and stripped.startswith("DATABASE_URL="):
                 return stripped.split("=", 1)[1].strip().strip("\"'")
 
+    configured = os.getenv("DATABASE_URL")
+    if configured:
+        return configured
+
     raise AssertionError("DATABASE_URL is not set and was not found in project .env")
 
 
-def _request(path: str, method: str = "GET", body: dict | None = None) -> tuple[int, dict]:
+def _request(
+    path: str,
+    method: str = "GET",
+    body: dict | None = None,
+    token: str | None = None,
+) -> tuple[int, dict]:
     data = None if body is None else json.dumps(body).encode("utf-8")
     request = Request(
         f"{API_BASE_URL}{path}",
         data=data,
         method=method,
-        headers={"Content-Type": "application/json"},
+        headers={
+            "Content-Type": "application/json",
+            **({"Authorization": f"Bearer {token}"} if token else {}),
+        },
     )
     try:
         with urlopen(request, timeout=60) as response:
@@ -70,10 +88,30 @@ def test_50_concurrent_debits_are_atomic_and_ledgered_once() -> None:
     )
 
     test_token = str(uuid.uuid4())
-    user_id = f"phase2-concurrency-{test_token}"
+    username = f"phase2-concurrency-{test_token}"
+    password = str(uuid.uuid4())
+
+    register_status, registered = _request(
+        "/auth/register",
+        "POST",
+        {"username": username, "password": password},
+    )
+    assert register_status == 201, f"Registration failed: HTTP {register_status}: {registered}"
+    user_id = registered["id"]
+
+    login_status, login = _request(
+        "/auth/login",
+        "POST",
+        {"username": username, "password": password},
+    )
+    assert login_status == 200, f"Login failed: HTTP {login_status}: {login}"
+    access_token = login["access_token"]
 
     create_status, created = _request(
-        "/wallets", "POST", {"user_id": user_id, "currency": "USD"}
+        "/wallets",
+        "POST",
+        {"user_id": user_id, "currency": "USD"},
+        token=access_token,
     )
     assert create_status == 201, f"Wallet creation failed: HTTP {create_status}: {created}"
     wallet_id = created["id"]
@@ -82,6 +120,7 @@ def test_50_concurrent_debits_are_atomic_and_ledgered_once() -> None:
         f"/wallets/{wallet_id}/credit",
         "POST",
         {"amount": INITIAL_BALANCE, "description": f"Phase 2 seed {test_token}"},
+        token=access_token,
     )
     assert 200 <= credit_status < 300, (
         f"Wallet funding failed: HTTP {credit_status}: {credit}"
@@ -100,6 +139,7 @@ def test_50_concurrent_debits_are_atomic_and_ledgered_once() -> None:
             f"/wallets/{wallet_id}/debit",
             "POST",
             {"amount": DEBIT_AMOUNT, "description": description},
+            token=access_token,
         )
         return {
             "index": index,
@@ -120,18 +160,26 @@ def test_50_concurrent_debits_are_atomic_and_ledgered_once() -> None:
         and "insufficient funds" in str(r["body"].get("detail", "")).lower()
     ]
 
-    balance_status, balance = _request(f"/wallets/{wallet_id}/balance")
-    ledger_status, ledger = _request(f"/wallets/{wallet_id}/ledger?limit=100&offset=0")
+    balance_status, balance = _request(
+        f"/wallets/{wallet_id}/balance", token=access_token
+    )
+    ledger_status, ledger = _request(
+        f"/wallets/{wallet_id}/ledger?limit=100&offset=0", token=access_token
+    )
     assert balance_status == 200, f"Balance query failed: HTTP {balance_status}: {balance}"
     assert ledger_status == 200, f"Ledger query failed: HTTP {ledger_status}: {ledger}"
 
     entries = ledger["entries"]
-    debit_entries = [entry for entry in entries if entry["operation_type"] == "DEBIT"]
+    run_entries = [
+        entry for entry in entries
+        if entry.get("description") and test_token in entry["description"]
+    ]
+    debit_entries = [entry for entry in run_entries if entry["operation_type"] == "DEBIT"]
     successful_entry_ids = {r["body"].get("id") for r in successful}
     debit_entry_ids = {entry["id"] for entry in debit_entries}
     failed_descriptions = {r["description"] for r in failed}
     failed_request_entries = [
-        entry for entry in entries
+        entry for entry in run_entries
         if entry.get("description") in failed_descriptions
     ]
     checks = {
