@@ -22,18 +22,19 @@ class RegisterRequest(LoginRequest):
     """Credentials used to create a new account."""
 
 
+class TokenResponse(BaseModel):
+    user_id: uuid.UUID
+    access_token: str
+    token_type: str = "bearer"
+    expires_in: int
+
+
 class UserResponse(BaseModel):
     id: uuid.UUID
     username: str
     created_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
-
-
-class TokenResponse(BaseModel):
-    access_token: str
-    token_type: str = "bearer"
-    expires_in: int
 
 
 # -------------------------

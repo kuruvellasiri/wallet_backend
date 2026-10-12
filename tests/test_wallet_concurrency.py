@@ -1,4 +1,4 @@
-"""Concurrency integration test against a running PostgreSQL-backed API.
+"""Concurrency integration tests against a running PostgreSQL-backed API.
 
 Run with the FastAPI server already running, for example:
     pytest -s tests/test_wallet_concurrency.py
@@ -210,3 +210,51 @@ def test_50_concurrent_debits_are_atomic_and_ledgered_once() -> None:
 
     assert all(checks.values()), "Phase 2 concurrency checks failed; see results above."
     print("PASS: Phase 2 concurrency scenario")
+
+
+def test_concurrent_duplicate_wallet_creation_returns_one_conflict() -> None:
+    """Confirm PostgreSQL's unique owner index handles a create race as HTTP 409."""
+    database_url = _database_url()
+    assert urlsplit(database_url).scheme.lower().startswith("postgresql"), (
+        "This integration test requires PostgreSQL."
+    )
+
+    test_token = str(uuid.uuid4())
+    username = f"wallet-create-race-{test_token}"
+    password = str(uuid.uuid4())
+    register_status, registered = _request(
+        "/auth/register",
+        "POST",
+        {"username": username, "password": password},
+    )
+    assert register_status == 201, f"Registration failed: HTTP {register_status}"
+
+    login_status, login = _request(
+        "/auth/login",
+        "POST",
+        {"username": username, "password": password},
+    )
+    assert login_status == 200, f"Login failed: HTTP {login_status}"
+    token = login["access_token"]
+    start_barrier = threading.Barrier(2)
+
+    def create_wallet() -> tuple[int, dict]:
+        start_barrier.wait(timeout=30)
+        return _request(
+            "/wallets",
+            "POST",
+            {"user_id": registered["id"], "currency": "USD"},
+            token=token,
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(lambda _: create_wallet(), range(2)))
+
+    statuses = sorted(status_code for status_code, _ in results)
+    assert statuses == [201, 409], (
+        "Expected one wallet creation and one duplicate conflict; "
+        f"received HTTP statuses {statuses}"
+    )
+    list_status, wallets = _request("/wallets", token=token)
+    assert list_status == 200, f"Wallet listing failed: HTTP {list_status}"
+    assert len(wallets) == 1, "The concurrent race must leave exactly one wallet"

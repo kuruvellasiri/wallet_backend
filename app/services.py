@@ -5,6 +5,7 @@ from typing import List, Tuple
 
 from sqlalchemy.orm import Session
 from sqlalchemy import func
+from sqlalchemy.exc import IntegrityError
 
 from fastapi import HTTPException, status
 
@@ -49,11 +50,46 @@ class WalletService:
 
         db.add(wallet)
 
-        db.commit()
+        try:
+            db.commit()
+        except IntegrityError as exc:
+            db.rollback()
+            if WalletService._is_duplicate_wallet_user_error(exc):
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="A wallet already exists for this user",
+                ) from exc
+            raise
 
         db.refresh(wallet)
 
         return wallet
+
+    @staticmethod
+    def _is_duplicate_wallet_user_error(exc: IntegrityError) -> bool:
+        """Return True only for the wallets.user_id uniqueness violation."""
+        original = exc.orig
+
+        # PostgreSQL reports the exact violated constraint through psycopg.
+        diag = getattr(original, "diag", None)
+        constraint_name = getattr(diag, "constraint_name", None)
+        sqlstate = getattr(original, "pgcode", None) or getattr(
+            original, "sqlstate", None
+        )
+        unique_user_id_indexes = {
+            index.name
+            for index in Wallet.__table__.indexes
+            if index.unique and list(index.columns.keys()) == ["user_id"]
+        }
+        if (
+            sqlstate == "23505"
+            and constraint_name in unique_user_id_indexes | {"wallets_user_id_key"}
+        ):
+            return True
+
+        # SQLite is used by the unit tests and reports the affected columns.
+        message = str(original)
+        return message == "UNIQUE constraint failed: wallets.user_id"
 
     # ---------------------------------
     # Get Wallet By ID

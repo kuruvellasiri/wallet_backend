@@ -140,7 +140,7 @@ def get_wallet_by_user(
 
     return WalletService.get_wallet_by_user_id(
         db,
-        user_id=user_id,
+        user_id=current_user.user_id,
     )
 
 

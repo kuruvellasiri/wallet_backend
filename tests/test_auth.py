@@ -65,10 +65,12 @@ def test_login_returns_jwt_with_database_user_id() -> None:
         user = _register(client)
         response = client.post('/auth/login', json={'username': TEST_USERNAME, 'password': TEST_PASSWORD})
     assert response.status_code == 200
+    assert response.json()['user_id'] == user['id']
     assert response.json()['token_type'] == 'bearer'
     assert response.json()['expires_in'] == 1800
     claims = jwt.decode(response.json()['access_token'], settings.JWT_SECRET_KEY, algorithms=[settings.JWT_ALGORITHM])
     assert claims['sub'] == user['id']
+    assert response.json()['user_id'] == claims['sub']
 
 
 def test_login_wrong_password_returns_401() -> None:
@@ -133,7 +135,9 @@ def test_user_cannot_access_another_users_wallet() -> None:
         _register(client, TEST_USERNAME)
         other_headers = _login(client, TEST_USERNAME)
         response = client.get(f"/wallets/{created.json()['id']}/balance", headers=other_headers)
+        ledger = client.get(f"/wallets/{created.json()['id']}/ledger", headers=other_headers)
     assert response.status_code == 403
+    assert ledger.status_code == 403
 
 
 def test_user_cannot_request_another_users_wallet_by_user_id() -> None:

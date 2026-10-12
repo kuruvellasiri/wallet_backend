@@ -124,6 +124,7 @@ def login(payload: LoginRequest, db: Session = Depends(get_db)) -> TokenResponse
         )
 
     return TokenResponse(
+        user_id=user.id,
         access_token=create_access_token(str(user.id)),
         expires_in=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
     )
